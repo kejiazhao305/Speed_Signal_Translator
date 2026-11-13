@@ -3,17 +3,19 @@
 /**
  ******************************************************************************
  * @file           : main.c
- * @brief          : STM32F411 USB CDC PWM Controller
+ * @brief          : STM32F411 USB CDC Sine PWM Controller
  *
  * Project: UTRA Speed Signal Translator
  *
  * Features:
  * - 96 MHz system clock
  * - 48 MHz USB clock
- * - USB CDC communication with Mac
- * - TIM1 Channel 1 PWM output on PA8
- * - Adjustable PWM frequency and duty cycle
- * - TIM2 Input Capture for future speed feedback
+ * - TIM1 CH1 PWM output on PA8
+ * - 20 kHz PWM frequency
+ * - 0% -> 100% -> 0% sine-shaped duty cycle
+ * - 4-second sine period
+ * - USB CDC communication
+ * - TIM2 Input Capture initialization
  *
  ******************************************************************************
  */
@@ -25,6 +27,7 @@
 
 /* USER CODE BEGIN Includes */
 #include "pwm_control.h"
+#include "sine_pwm.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
@@ -54,32 +57,30 @@ static void MX_TIM2_Init(void);
  */
 int main(void)
 {
-    /* Reset peripherals and initialize HAL */
     HAL_Init();
 
-    /* Configure system clock to 96 MHz */
+    /* Configure 96 MHz system clock */
     SystemClock_Config();
 
     /* Initialize peripherals */
     MX_GPIO_Init();
-
-    /* Initialize TIM1 PWM */
     MX_TIM1_Init();
-
-    /* Initialize TIM2 Input Capture */
     MX_TIM2_Init();
-
-    /* Initialize USB CDC */
     MX_USB_DEVICE_Init();
 
     /* USER CODE BEGIN 2 */
 
     /*
-     * Start PWM at:
-     * Frequency = 20 kHz
-     * Duty Cycle = 50%
+     * Initialize PWM at 20 kHz, 50% duty.
+     * TIM1 PWM starts here.
      */
     PWM_Control_Init();
+
+    /*
+     * Initialize sine-shaped duty cycle.
+     * Set initial duty to 0%.
+     */
+    Sine_PWM_Init();
 
     /* USER CODE END 2 */
 
@@ -93,18 +94,17 @@ int main(void)
 
         /*
          * Process incoming USB CDC commands.
-         *
-         * Example commands:
-         *
-         * PWM 20000 50
-         * PWM 10000 25
-         * PWM 50000 75
-         *
-         * Format:
-         * PWM <frequency_Hz> <duty_percent>
          */
-
         PWM_Control_Process();
+
+        /*
+         * Automatically update PWM duty cycle.
+         *
+         * 0% -> 100% -> 0%
+         * Complete cycle: 4 seconds
+         * Update interval: 10 milliseconds
+         */
+        Sine_PWM_Update();
 
         /* USER CODE END 3 */
     }
@@ -128,18 +128,15 @@ void SystemClock_Config(void)
     );
 
     /*
-     * External crystal = 25 MHz
+     * External HSE crystal = 25 MHz
      *
      * PLLM = 25
      * PLLN = 192
      * PLLP = 2
      * PLLQ = 4
      *
-     * PLL input = 25 / 25 = 1 MHz
-     * VCO = 1 * 192 = 192 MHz
-     *
-     * SYSCLK = 192 / 2 = 96 MHz
-     * USB CLK = 192 / 4 = 48 MHz
+     * SYSCLK = 96 MHz
+     * USB clock = 48 MHz
      */
 
     RCC_OscInitStruct.OscillatorType =
@@ -165,17 +162,7 @@ void SystemClock_Config(void)
         Error_Handler();
     }
 
-    /*
-     * Configure CPU and peripheral clocks
-     *
-     * SYSCLK = 96 MHz
-     * HCLK   = 96 MHz
-     * PCLK1  = 48 MHz
-     * PCLK2  = 96 MHz
-     *
-     * TIM1 clock = 96 MHz
-     * TIM2 clock = 96 MHz
-     */
+    /* Configure bus clocks */
 
     RCC_ClkInitStruct.ClockType =
         RCC_CLOCKTYPE_HCLK |
@@ -195,6 +182,16 @@ void SystemClock_Config(void)
     RCC_ClkInitStruct.APB2CLKDivider =
         RCC_HCLK_DIV1;
 
+    /*
+     * SYSCLK = 96 MHz
+     * HCLK   = 96 MHz
+     * PCLK1  = 48 MHz
+     * PCLK2  = 96 MHz
+     *
+     * TIM1 clock = 96 MHz
+     * TIM2 clock = 96 MHz
+     */
+
     if (HAL_RCC_ClockConfig(
             &RCC_ClkInitStruct,
             FLASH_LATENCY_3) != HAL_OK)
@@ -204,34 +201,31 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief TIM1 Initialization
+ * @brief TIM1 PWM Initialization
  *
- * PWM output:
- * PA8 = TIM1 Channel 1
+ * TIM1 Channel 1 -> PA8
  *
- * Initial frequency: 20 kHz
- * Initial duty cycle: 50%
+ * Initial PWM:
+ * Frequency = 20 kHz
+ * Duty = 50%
  *
- * @retval None
+ * Sine_PWM_Init() changes duty to 0%.
  */
 static void MX_TIM1_Init(void)
 {
     TIM_OC_InitTypeDef sConfigOC = {0};
     TIM_MasterConfigTypeDef sMasterConfig = {0};
 
-    /* Enable TIM1 peripheral clock */
+    /* Enable TIM1 clock */
     __HAL_RCC_TIM1_CLK_ENABLE();
 
     /*
-     * TIM1 clock = 96 MHz
-     *
-     * Prescaler = 0
-     * Period = 4799
+     * Timer clock = 96 MHz
      *
      * PWM frequency:
      *
-     * 96 MHz / ((0 + 1) * (4799 + 1))
-     * = 20 kHz
+     * 96,000,000 / ((0 + 1) * (4799 + 1))
+     * = 20,000 Hz
      */
 
     htim1.Instance = TIM1;
@@ -256,7 +250,7 @@ static void MX_TIM1_Init(void)
         Error_Handler();
     }
 
-    /* Timer master configuration */
+    /* TIM1 master configuration */
 
     sMasterConfig.MasterOutputTrigger =
         TIM_TRGO_RESET;
@@ -271,14 +265,7 @@ static void MX_TIM1_Init(void)
         Error_Handler();
     }
 
-    /*
-     * PWM Channel 1 configuration
-     *
-     * Pulse = 2400
-     *
-     * Duty cycle:
-     * 2400 / 4800 = 50%
-     */
+    /* Configure PWM Channel 1 */
 
     sConfigOC.OCMode =
         TIM_OCMODE_PWM1;
@@ -312,21 +299,13 @@ static void MX_TIM1_Init(void)
 /**
  * @brief TIM2 Input Capture Initialization
  *
- * Purpose:
- * Measure incoming frequency from motor controller.
+ * Reserved for future speed feedback.
  *
- * Timer clock: 96 MHz
- * Prescaler: 95
+ * Timer clock = 96 MHz
+ * Prescaler = 95
+ * Counter frequency = 1 MHz
  *
- * Counter frequency:
- *
- * 96 MHz / (95 + 1) = 1 MHz
- *
- * Timer resolution: 1 microsecond
- *
- * Input Capture Channel: 1
- *
- * @retval None
+ * TIM2 is initialized but capture is not started.
  */
 static void MX_TIM2_Init(void)
 {
@@ -335,8 +314,6 @@ static void MX_TIM2_Init(void)
     /* Enable TIM2 clock */
     __HAL_RCC_TIM2_CLK_ENABLE();
 
-    /* Configure TIM2 */
-
     htim2.Instance = TIM2;
 
     htim2.Init.Prescaler = 95;
@@ -344,15 +321,14 @@ static void MX_TIM2_Init(void)
     htim2.Init.CounterMode =
         TIM_COUNTERMODE_UP;
 
-    htim2.Init.Period = 0xFFFFFFFFU;
+    htim2.Init.Period =
+        0xFFFFFFFFU;
 
     htim2.Init.ClockDivision =
         TIM_CLOCKDIVISION_DIV1;
 
     htim2.Init.AutoReloadPreload =
         TIM_AUTORELOAD_PRELOAD_DISABLE;
-
-    /* Initialize TIM2 Input Capture */
 
     if (HAL_TIM_IC_Init(&htim2) != HAL_OK)
     {
@@ -381,26 +357,15 @@ static void MX_TIM2_Init(void)
     }
 
     /*
-     * Input Capture is configured but not started.
-     *
-     * Future implementation:
-     *
-     * HAL_TIM_IC_Start_IT(
-     *     &htim2,
-     *     TIM_CHANNEL_1
-     * );
-     *
-     * Configure the TIM2 input GPIO and NVIC
-     * before enabling capture interrupts.
+     * Do not start TIM2 Input Capture yet.
+     * GPIO and interrupt configuration are still needed.
      */
 }
 
 /**
  * @brief GPIO Initialization
  *
- * PA8 = TIM1 Channel 1 PWM Output
- *
- * @retval None
+ * PA8 = TIM1 Channel 1 PWM output
  */
 static void MX_GPIO_Init(void)
 {
@@ -409,9 +374,7 @@ static void MX_GPIO_Init(void)
     /* Enable GPIOA clock */
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    /*
-     * Configure PA8 for TIM1 PWM output
-     */
+    /* Configure PA8 as TIM1_CH1 */
 
     GPIO_InitStruct.Pin =
         GPIO_PIN_8;
@@ -436,7 +399,6 @@ static void MX_GPIO_Init(void)
 
 /**
  * @brief Error Handler
- * @retval None
  */
 void Error_Handler(void)
 {
@@ -444,7 +406,7 @@ void Error_Handler(void)
 
     while (1)
     {
-        /* Remain here on initialization error */
+        /* Stay here if initialization fails */
     }
 }
 
@@ -452,8 +414,6 @@ void Error_Handler(void)
 
 /**
  * @brief Assert failed
- * @param file Source file
- * @param line Line number
  */
 void assert_failed(uint8_t *file,
                    uint32_t line)
@@ -463,3 +423,4 @@ void assert_failed(uint8_t *file,
 }
 
 #endif
+

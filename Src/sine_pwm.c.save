@@ -1,0 +1,63 @@
+
+#include "main.h"
+#include <stdint.h>
+#include <math.h>
+
+extern TIM_HandleTypeDef htim1;
+
+#define SINE_PERIOD_MS 4000U
+#define UPDATE_INTERVAL_MS 10U
+
+static uint32_t last_update = 0;
+static uint32_t start_time = 0;
+
+void Sine_PWM_Init(void)
+{
+    start_time = HAL_GetTick();
+    last_update = start_time;
+
+    // Begin at 0% duty cycle
+    __HAL_TIM_SET_COMPARE(
+        &htim1,
+        TIM_CHANNEL_1,
+        0
+    );
+}
+
+void Sine_PWM_Update(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    if ((uint32_t)(now - last_update) < UPDATE_INTERVAL_MS)
+    {
+        return;
+    }
+
+    last_update = now;
+
+    // One full cycle every 4 seconds
+    uint32_t elapsed =
+        (uint32_t)(now - start_time) % SINE_PERIOD_MS;
+
+    float phase =
+        (2.0f * 3.14159265f * elapsed) /
+        SINE_PERIOD_MS;
+
+    // 0% -> 100% -> 0%
+    float duty =
+        0.5f * (1.0f - cosf(phase));
+
+    uint32_t period =
+        __HAL_TIM_GET_AUTORELOAD(&htim1) + 1U;
+
+    uint32_t compare =
+        (uint32_t)(duty * period + 0.5f);
+
+    // Update duty cycle without restarting TIM1
+    __HAL_TIM_SET_COMPARE(
+        &htim1,
+        TIM_CHANNEL_1,
+        compare
+    );
+}
+
