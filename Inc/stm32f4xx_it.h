@@ -1,23 +1,21 @@
+
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file    stm32f4xx_it.h
-  * @brief   This file contains the headers of the interrupt handlers.
-  ******************************************************************************
-  * @attention
+  * @brief   Interrupt handler declarations
   *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
+  * Project: UTRA Speed Signal Translator
+  * MCU: STM32F411CEU6
   *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
+  * Features:
+  * - TIM2 Input Capture for motor feedback
+  * - 15 pulses per motor revolution
+  * - USB CDC communication
   ******************************************************************************
   */
 /* USER CODE END Header */
 
-/* Define to prevent recursive inclusion -------------------------------------*/
 #ifndef __STM32F4xx_IT_H
 #define __STM32F4xx_IT_H
 
@@ -46,17 +44,24 @@ extern "C" {
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
+
 void NMI_Handler(void);
 void HardFault_Handler(void);
 void MemManage_Handler(void);
 void BusFault_Handler(void);
 void UsageFault_Handler(void);
+
 void SVC_Handler(void);
 void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
+
+/* TIM2 motor speed feedback interrupt */
 void TIM2_IRQHandler(void);
+
+/* USB CDC interrupt */
 void OTG_FS_IRQHandler(void);
+
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */
