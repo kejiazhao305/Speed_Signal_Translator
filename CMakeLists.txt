@@ -53,8 +53,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Adjustable PWM via USB CDC
     Src/pwm_control.c
 
-    # Automatic sine-shaped PWM
-    Src/sine_pwm.c
+    # Sine PWM sources are retained for future automatic mode.
 
 )
 
@@ -83,3 +82,10 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
 )
 
+
+add_custom_target(firmware-bin
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+            ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin
+    DEPENDS ${CMAKE_PROJECT_NAME}
+    VERBATIM
+)

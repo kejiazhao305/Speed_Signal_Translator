@@ -1,0 +1,73 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Configure firmware",
+      "type": "process",
+      "command": "cmake",
+      "args": [
+        "-S",
+        ".",
+        "-B",
+        "build-arm15",
+        "-DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "/Applications/ArmGNUToolchain/15.3.rel2/arm-none-eabi/bin:${env:PATH}"
+        }
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Build firmware",
+      "type": "process",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build-arm15"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "/Applications/ArmGNUToolchain/15.3.rel2/arm-none-eabi/bin:${env:PATH}"
+        }
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Generate firmware binary",
+      "type": "process",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build-arm15",
+        "--target",
+        "firmware-bin"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "/Applications/ArmGNUToolchain/15.3.rel2/arm-none-eabi/bin:${env:PATH}"
+        }
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Run Mac controller",
+      "type": "process",
+      "command": "python",
+      "args": [
+        "${workspaceFolder}/mac_pwm.py"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

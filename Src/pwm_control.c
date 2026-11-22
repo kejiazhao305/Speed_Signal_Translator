@@ -2,6 +2,9 @@
 #include "pwm_control.h"
 #include "main.h"
 
+#include "usbd_cdc_if.h"
+#include <errno.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -15,6 +18,8 @@ static uint8_t rx_buffer[RX_SIZE];
 static volatile uint16_t rx_head = 0;
 static volatile uint16_t rx_tail = 0;
 
+static volatile uint8_t rx_overrun;
+static char reply[112];
 static char command_line[LINE_SIZE];
 static uint32_t command_length = 0;
 static uint8_t line_overflow = 0;
@@ -51,8 +56,8 @@ int PWM_Control_Set(uint32_t frequency,
     // Calculate prescaler to keep ARR within 16 bits
     uint64_t divider =
         (timer_clock +
-         (uint64_t)frequency * 65536U - 1U)
-        / ((uint64_t)frequency * 65536U);
+         (uint64_t)frequency * 65535U - 1U)
+        / ((uint64_t)frequency * 65535U);
 
     if (divider < 1U) {
         divider = 1U;
@@ -82,32 +87,19 @@ int PWM_Control_Set(uint32_t frequency,
         (uint32_t)(((uint64_t)period * duty + 50U)
                    / 100U);
 
-    // Stop output before changing timer settings
-    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
-
+    // Load all three shadow registers together on the next natural update.
+    SET_BIT(TIM1->CR1, TIM_CR1_UDIS | TIM_CR1_ARPE);
+    SET_BIT(TIM1->CCMR1, TIM_CCMR1_OC1PE);
     __HAL_TIM_SET_PRESCALER(&htim1, psc);
     __HAL_TIM_SET_AUTORELOAD(&htim1, arr);
-    __HAL_TIM_SET_COMPARE(&htim1,
-                          TIM_CHANNEL_1,
-                          compare);
-
-    __HAL_TIM_SET_COUNTER(&htim1, 0);
-
-    // Load new prescaler, ARR and CCR values
-    htim1.Instance->EGR = TIM_EGR_UG;
-
-    // Restart hardware PWM
-    if (HAL_TIM_PWM_Start(&htim1,
-                         TIM_CHANNEL_1) != HAL_OK) {
-        return 0;
-    }
-
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, compare);
+    CLEAR_BIT(TIM1->CR1, TIM_CR1_UDIS);
     return 1;
 }
 
 void PWM_Control_Init(void)
 {
-    PWM_Control_Set(20000U, 50U);
+    if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK) Error_Handler();
 }
 
 // Called from USB CDC receive callback
@@ -121,6 +113,7 @@ void PWM_Control_USB_Receive(const uint8_t *data,
 
         // Drop incoming bytes if ring buffer is full
         if (next == rx_tail) {
+            rx_overrun = 1;
             break;
         }
 
@@ -131,26 +124,47 @@ void PWM_Control_USB_Receive(const uint8_t *data,
 
 static void Process_Command(const char *line)
 {
-    unsigned long frequency = 0;
-    unsigned long duty = 0;
-    char extra;
-
-    // Expected input: PWM 20000 50
-    int fields = sscanf(line,
-                        "PWM %lu %lu %c",
-                        &frequency,
-                        &duty,
-                        &extra);
-
-    if (fields == 2) {
-        PWM_Control_Set((uint32_t)frequency,
-                        (uint32_t)duty);
+    if (strcmp(line, "RPM?") == 0) {
+        Speed_Report(reply, sizeof(reply));
+        return;
     }
+    strcpy(reply, "ERROR expected PWM <10-100000 Hz> <0-100 percent> or RPM?\r\n");
+    if (strncmp(line, "PWM ", 4) != 0) return;
+    char *end;
+    const char *arg = line + 4;
+    while (*arg == ' ') arg++;
+    if (*arg < '0' || *arg > '9') return;
+    errno = 0;
+    unsigned long frequency = strtoul(arg, &end, 10);
+    if (errno || *end != ' ' || frequency > 100000UL) return;
+    while (*end == ' ') end++;
+    if (*end < '0' || *end > '9') return;
+    unsigned long duty = strtoul(end, &end, 10);
+    if (*end || errno || duty > 100UL) return;
+    if (PWM_Control_Set(frequency, duty)) strcpy(reply, "OK\r\n");
 }
 
 void PWM_Control_Process(void)
 {
+    if (*reply) {
+        __disable_irq();
+        uint8_t result = CDC_Transmit_FS((uint8_t *)reply, strlen(reply));
+        __enable_irq();
+        if (result == USBD_BUSY) return;
+        reply[0] = 0;
+    }
     while (rx_tail != rx_head) {
+        __disable_irq();
+        if (rx_overrun) {
+            rx_tail = rx_head;
+            rx_overrun = 0;
+            command_length = 0;
+            line_overflow = 1;
+            __enable_irq();
+            strcpy(reply, "ERROR receive overflow; send newline to resync\r\n");
+            return;
+        }
+        __enable_irq();
 
         char c = (char)rx_buffer[rx_tail];
 
@@ -159,7 +173,7 @@ void PWM_Control_Process(void)
 
         // Ignore carriage return
         if (c == '\r') {
-            continue;
+            c = '\n';
         }
 
         // Newline finishes a command
@@ -172,14 +186,16 @@ void PWM_Control_Process(void)
                 Process_Command(command_line);
             }
 
+            if (line_overflow) strcpy(reply, "ERROR invalid or oversized line\r\n");
             command_length = 0;
             line_overflow = 0;
+            if (*reply) return;
             continue;
         }
 
         if (!line_overflow) {
 
-            if (command_length < LINE_SIZE - 1U) {
+            if (c >= ' ' && c <= '~' && command_length < LINE_SIZE - 1U) {
                 command_line[command_length++] = c;
             } else {
                 line_overflow = 1;

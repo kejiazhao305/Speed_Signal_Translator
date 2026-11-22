@@ -2,7 +2,7 @@
 /**
  ******************************************************************************
  * @file           : main.c
- * @brief          : STM32F411 USB CDC Sine PWM Controller
+ * @brief          : STM32F411 USB CDC Manual PWM Controller
  *
  * Project: UTRA Speed Signal Translator
  *
@@ -10,12 +10,9 @@
  * - 96 MHz system clock
  * - 48 MHz USB clock
  * - TIM1 CH1 PWM output on PA8
- * - 20 kHz PWM frequency
- * - 0% -> 100% -> 0% sine-shaped duty cycle
- * - 4-second sine period
+ * - Manual PWM, initially 20 kHz at 50%
  * - USB CDC communication
- * - TIM2 CH2 input capture on PA1 (15 pulses/mechanical revolution)
- * - USB CDC speed report every 200 ms
+ * - TIM2 CH1 input capture on PA0
  *
  ******************************************************************************
  */
@@ -27,7 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "pwm_control.h"
-#include "sine_pwm.h"
+
 #include "usbd_cdc_if.h"
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -39,11 +36,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SPEED_PULSES_PER_REV 15U
-#define SPEED_TIMER_HZ 1000000UL
+#define SPEED_PULSES_PER_REV 600U
 #define SPEED_TIMEOUT_MS 500U
-#define SPEED_REPORT_MS 200U
-#define SPEED_MIN_PERIOD_US 20U
+
+
 
 /* USER CODE END PD */
 
@@ -58,9 +54,8 @@ TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
 static volatile uint32_t speed_last_capture = 0;
-static volatile uint32_t speed_period_us = 0;
+static volatile uint32_t speed_period_ticks = 0;
 static volatile uint32_t speed_last_edge_ms = 0;
-static volatile uint32_t speed_pulse_count = 0;
 static volatile uint8_t speed_have_first = 0;
 static volatile uint8_t speed_period_valid = 0;
 
@@ -77,45 +72,33 @@ static void MX_TIM2_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/* Send a compact report from the main loop, never from the timer IRQ. */
-static void Speed_Report(void) {
-  static uint32_t last_report_ms = 0;
-  uint32_t now = HAL_GetTick();
-  if ((uint32_t)(now - last_report_ms) < SPEED_REPORT_MS)
-    return;
-  last_report_ms = now;
-
-  /* Take a consistent snapshot of fields written by the IRQ. */
-  uint32_t period, edge_ms, pulses;
-  uint8_t valid;
+void Speed_Report(char *msg, size_t size) {
+  uint32_t period, edge_ms;
+  uint8_t valid, first;
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
-  period = speed_period_us;
+  uint32_t now = HAL_GetTick();
+  period = speed_period_ticks;
   edge_ms = speed_last_edge_ms;
-  pulses = speed_pulse_count;
+
   valid = speed_period_valid;
+  first = speed_have_first;
   __set_PRIMASK(primask);
 
   uint32_t hz_x10 = 0;
   uint32_t rpm_x10 = 0;
   if (valid && period != 0U && (uint32_t)(now - edge_ms) <= SPEED_TIMEOUT_MS) {
     /* Multiply before division to retain one decimal digit. */
-    uint64_t numerator = (uint64_t)SPEED_TIMER_HZ * 10ULL;
+    uint64_t numerator = (uint64_t)(HAL_RCC_GetPCLK1Freq() * ((RCC->CFGR & RCC_CFGR_PPRE1) ? 2U : 1U)) * 10ULL;
     hz_x10 = (uint32_t)(numerator / period);
     rpm_x10 = (uint32_t)((numerator * 60ULL) /
                          ((uint64_t)period * SPEED_PULSES_PER_REV));
   }
 
-  static char msg[112];
-  int n = snprintf(
-      msg, sizeof(msg), "SPEED RPM=%lu.%01lu HZ=%lu.%01lu PULSES=%lu\r\n",
-      (unsigned long)(rpm_x10 / 10U), (unsigned long)(rpm_x10 % 10U),
-      (unsigned long)(hz_x10 / 10U), (unsigned long)(hz_x10 % 10U),
-      (unsigned long)pulses);
-  if (n > 0 && n < (int)sizeof(msg)) {
-    /* When the USB peripheral is busy, skip this report. */
-    (void)CDC_Transmit_FS((uint8_t *)msg, (uint16_t)n);
-  }
+  const char *status = !first ? "NO_SIGNAL" : now - edge_ms > SPEED_TIMEOUT_MS ?
+                       "TIMEOUT" : valid ? "VALID" : "ACQUIRING";
+  snprintf(msg, size, "SPEED HZ=%lu.%lu RPM=%lu.%lu STATUS=%s\r\n",
+           hz_x10 / 10UL, hz_x10 % 10UL, rpm_x10 / 10UL, rpm_x10 % 10UL, status);
 }
 
 /* USER CODE END 0 */
@@ -160,15 +143,7 @@ int main(void)
    */
   PWM_Control_Init();
 
-  /*
-   * Initialize sine-shaped duty cycle.
-   * Set initial duty to 0%.
-   */
-  Sine_PWM_Init();
-
-  /* Start capturing feedback rising edges on TIM2_CH2 / PA1. */
-  speed_last_edge_ms = HAL_GetTick();
-  if (HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2) != HAL_OK) {
+  if (HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
 
@@ -186,17 +161,7 @@ int main(void)
      */
     PWM_Control_Process();
 
-    /*
-     * Automatically update PWM duty cycle.
-     *
-     * 0% -> 100% -> 0%
-     * Complete cycle: 4 seconds
-     * Update interval: 10 milliseconds
-     */
-    Sine_PWM_Update();
-
-    Speed_Report();
-
+  }
   /* USER CODE END 3 */
 }
 
@@ -400,33 +365,32 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
-  if (htim->Instance != TIM2 || htim->Channel != HAL_TIM_ACTIVE_CHANNEL_2)
+  if (htim->Instance != TIM2 || htim->Channel != HAL_TIM_ACTIVE_CHANNEL_1)
     return;
 
-  uint32_t captured = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
+  uint32_t captured = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
   uint32_t now = HAL_GetTick();
 
-  if (!speed_have_first ||
+  if (!speed_have_first || (__HAL_TIM_GET_FLAG(htim, TIM_FLAG_CC1OF) != RESET) ||
       (uint32_t)(now - speed_last_edge_ms) > SPEED_TIMEOUT_MS) {
+    __HAL_TIM_CLEAR_FLAG(htim, TIM_FLAG_CC1OF);
     /* First edge or restart: need another rising edge for a period. */
     speed_last_capture = captured;
     speed_last_edge_ms = now;
     speed_have_first = 1U;
     speed_period_valid = 0U;
-    speed_pulse_count++;
     return;
   }
 
   /* Unsigned subtraction also handles a single 32-bit timer rollover. */
-  uint32_t delta_us = captured - speed_last_capture;
-  if (delta_us < SPEED_MIN_PERIOD_US)
+  uint32_t delta_ticks = captured - speed_last_capture;
+  if (delta_ticks == 0U)
     return; /* Reject short glitches. */
 
   speed_last_capture = captured;
   speed_last_edge_ms = now;
-  speed_period_us = delta_us;
+  speed_period_ticks = delta_ticks;
   speed_period_valid = 1U;
-  speed_pulse_count++;
 }
 
 /* USER CODE END 4 */

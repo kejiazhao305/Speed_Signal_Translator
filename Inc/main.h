@@ -55,6 +55,8 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+#include <stddef.h>
+void Speed_Report(char *msg, size_t size);
 
 /* USER CODE END EFP */
 

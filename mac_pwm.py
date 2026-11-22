@@ -1,54 +1,41 @@
 import serial
-import serial.tools.list_ports
+from serial.tools import list_ports
 
-print("STM32 PWM Controller")
 
-ports = [
-    p.device for p in serial.tools.list_ports.comports()
-    if "usbmodem" in p.device.lower()
-]
+def controller():
+    ports = [p.device for p in list_ports.comports() if "usbmodem" in p.device.lower()]
+    if len(ports) == 1:
+        port = ports[0]
+    else:
+        print("Detected ports:", ", ".join(ports) or "none")
+        port = input("Serial device path: ").strip()
+    with serial.Serial(port, 115200, timeout=2, write_timeout=2) as link:
+        print("Connected to", port)
+        while True:
+            command = input("Frequency duty | r for RPM | q to quit > ").strip().lower()
+            if command == "q":
+                return
+            if command == "r":
+                message = "RPM?"
+            else:
+                try:
+                    frequency, duty = map(int, command.split())
+                    if not (10 <= frequency <= 100000 and 0 <= duty <= 100):
+                        raise ValueError
+                except ValueError:
+                    print("Enter 10–100000 Hz and 0–100 percent as two integers.")
+                    continue
+                message = f"PWM {frequency} {duty}"
+            link.write((message + "\n").encode("ascii"))
+            response = link.readline()
+            if not response.endswith(b"\n"):
+                print("Response timed out. Command outcome unknown. Closing connection.")
+                return
+            print(response.decode("ascii", errors="replace").strip())
 
-if not ports:
-    print("ERROR: No STM32 USB serial port detected.")
-    print("Check BOOT0 is LOW and reset the STM32.")
-    raise SystemExit(1)
 
-port = ports[0]
-print("Using port:", port)
-
-with serial.Serial(port, 115200, timeout=2) as ser:
-    print("Enter frequency and duty cycle.")
-    print("Example: 20000 50")
-    print("Type q to quit.")
-
-    while True:
-        command = input("PWM > ").strip()
-
-        if command.lower() == "q":
-            break
-
-        parts = command.split()
-
-        if len(parts) != 2:
-            print("Example: 20000 50")
-            continue
-
-        try:
-            frequency, duty = map(int, parts)
-        except ValueError:
-            print("Please enter two integers.")
-            continue
-
-        if not (10 <= frequency <= 100000):
-            print("Frequency must be 10-100000 Hz.")
-            continue
-
-        if not (0 <= duty <= 100):
-            print("Duty cycle must be 0-100%.")
-            continue
-
-        message = f"PWM {frequency} {duty}\n"
-        ser.write(message.encode("ascii"))
-        ser.flush()
-
-        print(f"Sent: {frequency} Hz, {duty}%")
+if __name__ == "__main__":
+    try:
+        controller()
+    except (serial.SerialException, OSError, EOFError, KeyboardInterrupt) as error:
+        print("Controller closed.", error)

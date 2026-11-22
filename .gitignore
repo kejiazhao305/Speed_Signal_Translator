@@ -17,4 +17,5 @@ cmake-build-*/
 *_backup.txt
 
 # VS Code local settings
-.vscode/
+.vscode/*
+!.vscode/tasks.json
